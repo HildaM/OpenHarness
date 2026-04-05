@@ -509,6 +509,160 @@ uv run oh -p "Read main.py and summarize it"
 # stderr 会输出每个事件的类型和内容
 ```
 
+#### 实验 3 的真实运行结果
+
+以下是实际运行 `uv run oh -p "Read main.py and summarize it"` 后的日志（已精简）：
+
+```
+[EVENT] AssistantTurnComplete: ...content=[ToolUseBlock(name='read_file', input={'path': 'main.py'})]
+        usage=UsageSnapshot(input_tokens=6542, output_tokens=37)
+
+[EVENT] ToolExecutionStarted:  tool_name='read_file', tool_input={'path': 'main.py'}
+[EVENT] ToolExecutionCompleted: output='File not found: .../main.py', is_error=True
+
+[EVENT] AssistantTextDelta: text='No'
+[EVENT] AssistantTextDelta: text=' `'
+[EVENT] AssistantTextDelta: text='main'
+[EVENT] AssistantTextDelta: text='.py'
+[EVENT] AssistantTextDelta: text='`'
+[EVENT] AssistantTextDelta: text=' in'
+[EVENT] AssistantTextDelta: text=' the'
+[EVENT] AssistantTextDelta: text=' root'
+[EVENT] AssistantTextDelta: text=' directory'
+[EVENT] AssistantTextDelta: text='.'
+[EVENT] AssistantTextDelta: text=' Let'
+[EVENT] AssistantTextDelta: text=' me'
+[EVENT] AssistantTextDelta: text=' search'
+[EVENT] AssistantTextDelta: text=' for'
+[EVENT] AssistantTextDelta: text=' it'
+[EVENT] AssistantTextDelta: text=':'
+[EVENT] AssistantTurnComplete: ...content=[TextBlock(...), ToolUseBlock(name='glob', input={'pattern': '**/main.py'})]
+        usage=UsageSnapshot(input_tokens=6603, output_tokens=50)
+
+[EVENT] ToolExecutionStarted:  tool_name='glob', tool_input={'pattern': '**/main.py'}
+[EVENT] ToolExecutionCompleted: output='.venv/lib/.../main.py\n...' (13 个结果)
+
+[EVENT] AssistantTextDelta: text='All'
+[EVENT] AssistantTextDelta: text=' `'
+[EVENT] AssistantTextDelta: text='main'
+...
+```
+
+##### 从日志中读出的 5 个关键事实
+
+**① 总共发了 3 次 LLM 请求（3 轮 Agent 循环）**
+
+| 轮次 | LLM 决策 | 工具调用 | Token 消耗 |
+|------|----------|---------|-----------|
+| 第 1 轮 | 直接调用工具（**无文本输出**） | `read_file("main.py")` → 文件不存在 | 6542 in / 37 out |
+| 第 2 轮 | 先输出文字再调工具 | `glob("**/main.py")` → 找到 .venv 里的文件 | 6603 in / 50 out |
+| 第 3 轮 | 输出最终回答 | （无工具调用 → 循环结束） | ... |
+
+**② 每个 TextDelta ≈ 1 个 token**
+
+```
+TextDelta('No')      ← token 1
+TextDelta(' `')      ← token 2（注意前面的空格也是 token 的一部分）
+TextDelta('main')    ← token 3
+TextDelta('.py')     ← token 4
+```
+
+这是 LLM 的自回归生成特性：模型逐 token 生成，API 服务端通过 SSE 逐 token 推送，客户端逐 token 渲染。**整个链路只有 1 次 HTTP 请求**（per 轮），服务端在同一个连接上持续推送。
+
+**③ LLM 可以不说话直接行动**
+
+第 1 轮没有任何 `TextDelta`——LLM 判断不需要跟用户解释，直接调用 `read_file`。`TurnComplete` 的 content 里只有 `ToolUseBlock`，没有 `TextBlock`。
+
+**④ 工具执行在两轮 LLM 请求之间**
+
+```
+LLM 请求 1 → 返回 ToolUseBlock
+                ↓
+          ToolStarted → ToolCompleted（本地执行，不调 API）
+                ↓
+LLM 请求 2 → 看到工具结果，继续推理
+```
+
+工具执行是**纯本地操作**（读文件、搜索等），不消耗 LLM token。
+
+**⑤ input_tokens 在增长**
+
+第 1 轮 `input_tokens=6542`，第 2 轮 `input_tokens=6603`——因为第 2 轮的输入包含了第 1 轮的对话历史 + 工具结果。这就是为什么项目需要 auto-compact 机制来控制上下文窗口。
+
+#### 完整 events.log 统计分析
+
+将 stderr 重定向到文件可以获得干净的完整日志：
+
+```bash
+uv run oh -p "Read main.py and summarize it" 2>events.log
+```
+
+以下是对 552 行完整日志的统计：
+
+| 指标 | 数值 |
+|------|------|
+| Agent 循环轮数 | **8 轮**（8 次 `TurnComplete`） |
+| LLM 请求次数 | **8 次**（每轮 1 次 HTTP 请求） |
+| 工具调用次数 | **9 次**（第 3 轮并发调了 2 个 glob） |
+| TextDelta 事件 | **~435 个**（≈ 435 个 output token） |
+| input_tokens 增长 | 6542 → 6598 → 6868 → 8616 → 8763 → 11103 → 13826 → 15874 → **17067** |
+| 总 output_tokens | 32 + 55 + 108 + 90 + 64 + 44 + 34 + 36 + 456 = **~919** |
+
+##### Agent 完整决策过程
+
+LLM 像一个真人开发者一样，逐步探索项目结构：
+
+```
+轮次  LLM 决策                              工具调用                        结果
+────  ──────                              ────────                      ────
+ 1    直接调工具（无文字输出）               read_file("main.py")           ❌ 文件不存在
+ 2    "文件不存在，搜一下"                   glob("**/main.py")            找到 13 个（全在 .venv 里）
+ 3    "都是第三方包，看看项目结构"           glob("*.py") + glob("src/**/*.py")  并发执行 2 个工具！
+ 4    "找到 __main__.py，读一下"            read_file("__main__.py")       读到 6 行入口代码
+ 5    "只是个 shim，读 cli.py"              read_file("cli.py")            读到前 200 行
+ 6    （静默续读，不输出文字）                read_file("cli.py", offset=200)   读到 200-400 行
+ 7    （静默续读）                           read_file("cli.py", offset=400)   读到 400-600 行
+ 8    （静默续读）                           read_file("cli.py", offset=600)   读到 600-681 行
+ 最终  输出完整的 Markdown 总结（456 token）  无工具调用 → Agent 循环结束
+```
+
+##### 从日志中发现的两个有趣细节
+
+**并发工具执行（第 3 轮，日志第 58-61 行）**：
+
+```
+[EVENT] ToolExecutionStarted:  tool_name='glob', tool_input={'pattern': '*.py'}
+[EVENT] ToolExecutionStarted:  tool_name='glob', tool_input={'pattern': 'src/**/*.py'}
+[EVENT] ToolExecutionCompleted: output='(no matches)'
+[EVENT] ToolExecutionCompleted: output='src/__init__.py\nsrc/openharness/...'
+```
+
+LLM 在 `TurnComplete` 的 content 中返回了 **2 个 ToolUseBlock**，引擎用 `asyncio.gather` 并发执行。两个 `Started` 紧挨着，两个 `Completed` 也紧挨着——说明是同时发起的，不是顺序执行。
+
+对应 `engine/query.py` 的代码：
+```python
+if len(tool_calls) == 1:
+    result = await _execute_tool_call(...)        # 单工具：顺序
+else:
+    results = await asyncio.gather(...)           # 多工具：并发  ← 第 3 轮走的这条路
+```
+
+**input_tokens 从 6542 涨到 17067（2.6 倍）**：
+
+```
+轮次 1: input=6542   ← 初始（system prompt + 用户消息 + 42 个工具定义）
+轮次 2: input=6598   ← +56（第 1 轮的工具调用 + 结果）
+轮次 3: input=6868   ← +270（第 2 轮的文字 + glob 结果）
+轮次 4: input=8616   ← +1748（第 3 轮的文字 + 两个 glob 结果，src/ 下 160 个文件名）
+轮次 5: input=8763   ← +147（__main__.py 的 6 行内容）
+轮次 6: input=11103  ← +2340（cli.py 前 200 行）
+轮次 7: input=13826  ← +2723（cli.py 200-400 行）
+轮次 8: input=15874  ← +2048（cli.py 400-600 行）
+最终:   input=17067  ← +1193（cli.py 600-681 行）
+```
+
+每轮的 input 包含**完整的对话历史**，所以越往后越大。读一个 681 行的文件就把 input 从 6K 推到了 17K。如果是更大的代码库，很快会逼近模型的上下文窗口限制（200K），此时 `auto_compact_if_needed()` 就会触发压缩。
+
 ---
 
 ## 九、关联阅读

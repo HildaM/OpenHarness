@@ -112,6 +112,9 @@ async def run_print_mode(
                 events_list.append(obj)
 
         async def _render_event(event: StreamEvent) -> None:
+            # stderr 会输出每个事件的类型和内容
+            print(f"[EVENT] {type(event).__name__}: {event}", file=sys.stderr)
+
             nonlocal collected_text
             if isinstance(event, AssistantTextDelta):
                 collected_text += event.text

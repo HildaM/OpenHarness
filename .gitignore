@@ -34,3 +34,7 @@ react_tui_smoke.txt
 .DS_Store
 Thumbs.db
 uv.lock
+
+# Debug output
+debug_system_prompt.md
+events.log
