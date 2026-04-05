@@ -35,6 +35,28 @@ class GrepTool(BaseTool):
 
     async def execute(self, arguments: GrepToolInput, context: ToolExecutionContext) -> ToolResult:
         root = _resolve_path(context.cwd, arguments.root) if arguments.root else context.cwd
+        if root.is_file():
+            display_base = _display_base(root, context.cwd)
+            matches = await _rg_grep_file(
+                path=root,
+                pattern=arguments.pattern,
+                case_sensitive=arguments.case_sensitive,
+                limit=arguments.limit,
+                display_base=display_base,
+            )
+            if matches is not None:
+                return ToolResult(output="\n".join(matches) if matches else "(no matches)")
+
+            return ToolResult(
+                output=_python_grep_files(
+                    paths=[root],
+                    pattern=arguments.pattern,
+                    case_sensitive=arguments.case_sensitive,
+                    limit=arguments.limit,
+                    display_base=display_base,
+                )
+            )
+
         # Prefer ripgrep for performance; fallback to Python when unavailable.
         matches = await _rg_grep(
             root=root,
@@ -47,31 +69,59 @@ class GrepTool(BaseTool):
             return ToolResult(output="\n".join(matches) if matches else "(no matches)")
 
         # Python fallback (kept for portability).
-        flags = 0 if arguments.case_sensitive else re.IGNORECASE
-        compiled = re.compile(arguments.pattern, flags)
-        collected: list[str] = []
+        return ToolResult(
+            output=_python_grep_files(
+                paths=root.glob(arguments.file_glob),
+                pattern=arguments.pattern,
+                case_sensitive=arguments.case_sensitive,
+                limit=arguments.limit,
+                display_base=root,
+            )
+        )
 
-        for path in root.glob(arguments.file_glob):
-            if len(collected) >= arguments.limit:
-                break
-            if not path.is_file():
-                continue
-            try:
-                raw = path.read_bytes()
-            except OSError:
-                continue
-            if b"\x00" in raw:
-                continue
-            text = raw.decode("utf-8", errors="replace")
-            for line_no, line in enumerate(text.splitlines(), start=1):
-                if compiled.search(line):
-                    collected.append(f"{path.relative_to(root)}:{line_no}:{line}")
-                    if len(collected) >= arguments.limit:
-                        break
 
-        if not collected:
-            return ToolResult(output="(no matches)")
-        return ToolResult(output="\n".join(collected))
+def _display_base(path: Path, cwd: Path) -> Path:
+    try:
+        path.relative_to(cwd)
+    except ValueError:
+        return path.parent
+    return cwd
+
+
+def _python_grep_files(
+    *,
+    paths,
+    pattern: str,
+    case_sensitive: bool,
+    limit: int,
+    display_base: Path,
+) -> str:
+    # Python fallback (kept for portability).
+    flags = 0 if case_sensitive else re.IGNORECASE
+    compiled = re.compile(pattern, flags)
+    collected: list[str] = []
+
+    for path in paths:
+        if len(collected) >= limit:
+            break
+        if not path.is_file():
+            continue
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        if b"\x00" in raw:
+            continue
+        text = raw.decode("utf-8", errors="replace")
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            if compiled.search(line):
+                collected.append(f"{_format_path(path, display_base)}:{line_no}:{line}")
+                if len(collected) >= limit:
+                    break
+
+    if not collected:
+        return "(no matches)"
+    return "\n".join(collected)
 
 
 def _resolve_path(base: Path, candidate: str | None) -> Path:
@@ -138,3 +188,61 @@ async def _rg_grep(
     if process.returncode in {0, 1}:
         return matches
     return None
+
+
+async def _rg_grep_file(
+    *,
+    path: Path,
+    pattern: str,
+    case_sensitive: bool,
+    limit: int,
+    display_base: Path,
+) -> list[str] | None:
+    rg = shutil.which("rg")
+    if not rg:
+        return None
+
+    cmd: list[str] = [
+        rg,
+        "--no-heading",
+        "--line-number",
+        "--color",
+        "never",
+    ]
+    if not case_sensitive:
+        cmd.append("-i")
+    cmd.extend(["--", pattern, path.name])
+
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=str(path.parent),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    matches: list[str] = []
+    try:
+        assert process.stdout is not None
+        while len(matches) < limit:
+            raw = await process.stdout.readline()
+            if not raw:
+                break
+            line = raw.decode("utf-8", errors="replace").rstrip("\n")
+            if not line:
+                continue
+            matches.append(f"{_format_path(path, display_base)}:{line}")
+    finally:
+        if len(matches) >= limit and process.returncode is None:
+            process.terminate()
+        await process.wait()
+
+    if process.returncode in {0, 1}:
+        return matches
+    return None
+
+
+def _format_path(path: Path, display_base: Path) -> str:
+    try:
+        return str(path.relative_to(display_base))
+    except ValueError:
+        return str(path)

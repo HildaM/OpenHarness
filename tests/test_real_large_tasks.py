@@ -34,7 +34,7 @@ RESULTS: dict[str, tuple[bool, float]] = {}
 # Shared infrastructure
 # ====================================================================
 
-def make_engine(system_prompt, cwd=None, hook_executor=None, max_tokens=4096):
+def make_engine(system_prompt, cwd=None, hook_executor=None, max_tokens=4096, max_turns=DEFAULT_MAX_TURNS):
     from openharness.api.client import AnthropicApiClient
     from openharness.config.settings import PermissionSettings
     from openharness.engine.query_engine import QueryEngine
@@ -58,7 +58,7 @@ def make_engine(system_prompt, cwd=None, hook_executor=None, max_tokens=4096):
     return QueryEngine(
         api_client=api, tool_registry=reg, permission_checker=checker,
         cwd=Path(cwd or WORKSPACE), model=MODEL, system_prompt=system_prompt,
-        max_tokens=max_tokens, hook_executor=hook_executor,
+        max_tokens=max_tokens, max_turns=max_turns, hook_executor=hook_executor,
     )
 
 
