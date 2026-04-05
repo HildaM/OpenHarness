@@ -9,14 +9,26 @@ from typing import Optional
 
 import typer
 
+# 创建 Typer 应用实例 —— 整个 CLI 的根对象
+# 执行 `oh` 或 `openharness` 命令时，Typer 会解析命令行参数并路由到对应的处理函数
 app = typer.Typer(
+    # name: CLI 程序名称，显示在 --help 输出的标题中
     name="openharness",
+    # help: 程序描述文本，执行 `oh --help` 时展示在最顶部
     help=(
         "Oh my Harness! An AI-powered coding assistant.\n\n"
         "Starts an interactive session by default, use -p/--print for non-interactive output."
     ),
+    # add_completion: 禁用 Typer 自带的 shell 自动补全子命令（--install-completion / --show-completion）
+    # 设为 False 让 --help 输出更简洁，避免暴露无关子命令
     add_completion=False,
+    # rich_markup_mode: 启用 Rich 库的标记语法，让 --help 输出支持颜色和格式化
+    # 可选值: "rich"（Rich 标记）、"markdown"（Markdown）、None（纯文本）
     rich_markup_mode="rich",
+    # invoke_without_command: 关键参数！
+    # 设为 True 表示：即使用户没有输入子命令（如 oh mcp / oh plugin），也会执行 @app.callback 装饰的 main() 函数
+    # 这使得直接运行 `oh` 就能启动交互会话，而不是报错 "Missing command"
+    # 如果设为 False，用户必须显式指定子命令才能执行任何操作
     invoke_without_command=True,
 )
 
@@ -45,8 +57,11 @@ def mcp_list() -> None:
     from openharness.mcp.config import load_mcp_server_configs
     from openharness.plugins import load_plugins
 
+    # 加载配置
     settings = load_settings()
+    # 加载插件
     plugins = load_plugins(settings, str(Path.cwd()))
+    # 加载 MCP 服务器配置
     configs = load_mcp_server_configs(settings, plugins)
     if not configs:
         print("No MCP servers configured.")
