@@ -17,7 +17,14 @@
 
 ### 核心层
 6. [RUNTIME_AND_AGENT_LOOP.md](learning/RUNTIME_AND_AGENT_LOOP.md) — `runtime.py` + `query_engine.py` + `query.py` 核心运行时与 Agent 循环
-7. [ENGINE_DEEP_DIVE.md](learning/ENGINE_DEEP_DIVE.md) — 消息模型、对话压缩与成本追踪（6 文件深入分析）
+7. [ENGINE_PACKAGE.md](learning/ENGINE_PACKAGE.md) — `engine/` 包全景分析（6 文件：模型、事件、成本、引擎、循环）
+8. [ENGINE_DEEP_DIVE.md](learning/ENGINE_DEEP_DIVE.md) — 消息模型、对话压缩与成本追踪深入
+
+### 专题
+9. [WHY_YIELD.md](learning/WHY_YIELD.md) — 为什么整个项目都在用 `yield`？流式数据管道解析
+
+## improvements/ — 缺陷记录与优化计划
+- [TODO.md](improvements/TODO.md) — 项目缺陷与优化 TODO 列表
 
 ## 原有文档
 - [SHOWCASE.md](SHOWCASE.md) — 使用案例展示

@@ -520,6 +520,7 @@ async def handle_line(
         # 特殊情况：/continue 命令会设置 continue_pending=True
         # 这时需要继续之前中断的 Agent 循环（不追加新用户消息）
         if result.continue_pending:
+            # 加载与更新system prompt
             settings = bundle.current_settings()
             bundle.engine.set_max_turns(settings.max_turns)
             system_prompt = build_runtime_system_prompt(
@@ -528,6 +529,8 @@ async def handle_line(
                 latest_user_prompt=_last_user_text(bundle.engine.messages),
             )
             bundle.engine.set_system_prompt(system_prompt)
+
+            # 从上次中断处继续 Agent 循环
             turns = result.continue_turns if result.continue_turns is not None else bundle.engine.max_turns
             try:
                 # engine.continue_pending() 不追加新消息，从上次中断处继续 Agent 循环
@@ -538,6 +541,8 @@ async def handle_line(
                 pending = _format_pending_tool_results(bundle.engine.messages)
                 if pending:
                     await print_system(pending)
+
+            # 保存会话快照
             save_session_snapshot(
                 cwd=bundle.cwd,
                 model=settings.model,
