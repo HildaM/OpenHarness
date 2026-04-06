@@ -70,6 +70,12 @@
 | 07 | [07-engine-package.md](07-engine-package.md) | engine/ 包 6 文件全景 | engine/ 全部 6 个文件 | 25min | 文件间依赖图 + 对外接口清单 + 消息历史生命周期 + 7 个设计模式 |
 | 08 | [08-engine-compact-and-cost.md](08-engine-compact-and-cost.md) | 消息模型 + 对话压缩 + 成本追踪 | `messages.py` + `compact/` + `cost_tracker.py` + `token_estimation.py` | 30min | 3 种 ContentBlock + 两级压缩策略 + 阈值 167K + Token 估算 |
 
+### 第四阶段：子系统层
+
+| # | 文件名 | 主题 | 涉及源文件 | 时间 | 核心收获 |
+|---|--------|------|-----------|------|---------|
+| 10 | [10-tool-system.md](10-tool-system.md) | 工具系统深度剖析 | `tools/base.py` + `tools/__init__.py` + 6 个工具实现 + `engine/query.py` | 35min | 三层架构（抽象→实现→注册）+ Pydantic 一举三得 + MCP 适配器模式 + 自己写工具 |
+
 ### 专题
 
 | # | 文件名 | 主题 | 时间 | 核心收获 |
@@ -107,3 +113,7 @@
 ---
 
 *最后更新：2026-04-06*
+
+---
+
+**其他**：[PROGRESS.md](PROGRESS.md) — 学习进度与后续 5 个方向记录
