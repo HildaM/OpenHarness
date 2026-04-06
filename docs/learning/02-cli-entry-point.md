@@ -616,4 +616,4 @@ uv run oh -p "Say hi" --output-format stream-json 2>/dev/null
 | Agent 循环核心 | `src/openharness/engine/query.py`（244 行） |
 | 会话存储实现 | `src/openharness/services/session_storage.py`（178 行） |
 | 配置加载与合并 | `src/openharness/config/settings.py`（184 行） |
-| 完整启动流程总览 | [STARTUP_FLOW.md](STARTUP_FLOW.md) |
+| 完整启动流程总览 | [01-startup-overview.md](01-startup-overview.md) |

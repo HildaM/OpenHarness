@@ -1,6 +1,6 @@
 # `ui/react_launcher.py` — 前后端双进程架构深度剖析
 
-> **前置阅读**：[APP_UI_ROUTING.md](APP_UI_ROUTING.md) 中的 `run_repl()` 两条分支
+> **前置阅读**：[03-app-ui-routing.md](03-app-ui-routing.md) 中的 `run_repl()` 两条分支
 >
 > **源文件**：`src/openharness/ui/react_launcher.py`（116 行）
 >
@@ -495,7 +495,7 @@ pgrep -a -f "openharness"
 
 | 方向 | 文件 | 说明 |
 |------|------|------|
-| ↑ 调用方 | `ui/app.py` run_repl() | [APP_UI_ROUTING.md](APP_UI_ROUTING.md) |
+| ↑ 调用方 | `ui/app.py` run_repl() | [03-app-ui-routing.md](03-app-ui-routing.md) |
 | → 后端主机 | `ui/backend_host.py` | 接收前端请求、调用 handle_line()（317 行） |
 | → 通信协议 | `ui/protocol.py` | FrontendRequest + BackendEvent 定义（198 行） |
 | → 前端入口 | `frontend/terminal/src/index.tsx` | 9 行：读配置、渲染 App |

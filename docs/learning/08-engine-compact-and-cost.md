@@ -1,6 +1,6 @@
 # Agent 引擎深入：消息模型、对话压缩与成本追踪
 
-> **前置阅读**：[RUNTIME_AND_AGENT_LOOP.md](RUNTIME_AND_AGENT_LOOP.md) 第四节 `run_query()`
+> **前置阅读**：[06-runtime-and-agent-loop.md](06-runtime-and-agent-loop.md) 第四节 `run_query()`
 >
 > **本文涉及文件**：
 > - `engine/messages.py`（109 行）— 消息和内容块模型

@@ -1,6 +1,6 @@
 # `ui/app.py` — UI 路由层深度剖析
 
-> **前置阅读**：[STARTUP_FLOW.md](STARTUP_FLOW.md)（第三层）、[MAIN_ENTRY_DEEP_DIVE.md](MAIN_ENTRY_DEEP_DIVE.md)（路径 B/C）
+> **前置阅读**：[01-startup-overview.md](01-startup-overview.md)（第三层）、[02-cli-entry-point.md](02-cli-entry-point.md)（路径 B/C）
 >
 > **源文件**：`src/openharness/ui/app.py`（159 行）
 
@@ -669,10 +669,10 @@ else:
 
 | 方向 | 文件 | 说明 |
 |------|------|------|
-| ↑ 上游调用方 | `cli.py` main() | [MAIN_ENTRY_DEEP_DIVE.md](MAIN_ENTRY_DEEP_DIVE.md) |
+| ↑ 上游调用方 | `cli.py` main() | [02-cli-entry-point.md](02-cli-entry-point.md) |
 | → 交互模式分支 | `ui/react_launcher.py` | 前端启动器（117 行） |
 | → 交互模式分支 | `ui/backend_host.py` | JSON Lines 后端主机（317 行） |
-| ↓ 下游核心 | `ui/runtime.py` | `build_runtime()` + `handle_line()` — [STARTUP_FLOW.md](STARTUP_FLOW.md) 第五、六层 |
+| ↓ 下游核心 | `ui/runtime.py` | `build_runtime()` + `handle_line()` — [01-startup-overview.md](01-startup-overview.md) 第五、六层 |
 | ↓ 事件定义 | `engine/stream_events.py` | 4 种 StreamEvent 定义（50 行） |
 
 ### 建议的下一步阅读

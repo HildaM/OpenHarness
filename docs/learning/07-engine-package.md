@@ -3,7 +3,7 @@
 > **本文档对 `engine/` 包的 6 个文件进行完整分析**，重点在于理解各文件的职责边界、
 > 数据如何在文件间流动、以及整个包与外部的交互接口。
 >
-> **前置阅读**：[RUNTIME_AND_AGENT_LOOP.md](RUNTIME_AND_AGENT_LOOP.md)、[ENGINE_DEEP_DIVE.md](ENGINE_DEEP_DIVE.md)
+> **前置阅读**：[06-runtime-and-agent-loop.md](06-runtime-and-agent-loop.md)、[08-engine-compact-and-cost.md](08-engine-compact-and-cost.md)
 
 ---
 
@@ -384,9 +384,9 @@ _messages = [
 
 | 方向 | 文档/文件 | 说明 |
 |------|-----------|------|
-| ↑ 上层调用 | [RUNTIME_AND_AGENT_LOOP.md](RUNTIME_AND_AGENT_LOOP.md) | handle_line 如何调用 engine |
-| ↑ 上层调用 | [FRONTEND_BACKEND_ARCHITECTURE.md](FRONTEND_BACKEND_ARCHITECTURE.md) | 事件如何传到前端 |
-| ↓ 消息压缩 | [ENGINE_DEEP_DIVE.md](ENGINE_DEEP_DIVE.md) | compact 系统详解 |
+| ↑ 上层调用 | [06-runtime-and-agent-loop.md](06-runtime-and-agent-loop.md) | handle_line 如何调用 engine |
+| ↑ 上层调用 | [05-frontend-backend-protocol.md](05-frontend-backend-protocol.md) | 事件如何传到前端 |
+| ↓ 消息压缩 | [08-engine-compact-and-cost.md](08-engine-compact-and-cost.md) | compact 系统详解 |
 | ↓ 工具系统 | `tools/base.py` → `tools/file_read_tool.py` | 工具怎么实现 |
 | ↓ API 客户端 | `api/client.py` / `api/openai_client.py` | LLM 调用怎么实现 |
 | ↓ 权限系统 | `permissions/checker.py` | 权限检查的完整逻辑 |

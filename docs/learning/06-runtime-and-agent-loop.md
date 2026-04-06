@@ -7,7 +7,7 @@
 > - `engine/query_engine.py`（149 行）— 对话管理
 > - `engine/query.py`（244 行）— Agent 循环本体
 >
-> **前置阅读**：[STARTUP_FLOW.md](STARTUP_FLOW.md) 第五~七层概览
+> **前置阅读**：[01-startup-overview.md](01-startup-overview.md) 第五~七层概览
 
 ---
 

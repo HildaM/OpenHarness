@@ -226,7 +226,7 @@ backend_host._render_event()  →  _emit()  →  stdout  →  前端
 - **正向**：`_process_line()` → `handle_line()` → `engine.submit_message()` — 逐层往下调用
 - **反向回调**：`engine` 内部 → `permission_prompt()` → `backend_host._ask_permission()` — 引擎通过注入的回调反向联系 backend_host
 
-详细的边界分析见 [ENGINE_DEEP_DIVE.md](ENGINE_DEEP_DIVE.md) 第零节。
+详细的边界分析见 [08-engine-compact-and-cost.md](08-engine-compact-and-cost.md) 第零节。
 
 ---
 
@@ -559,7 +559,7 @@ finally:
 
 | 方向 | 文件 | 说明 |
 |------|------|------|
-| ↑ 调用方 | `ui/app.py` run_repl() | [APP_UI_ROUTING.md](APP_UI_ROUTING.md) |
+| ↑ 调用方 | `ui/app.py` run_repl() | [03-app-ui-routing.md](03-app-ui-routing.md) |
 | ↓ 下游核心 | `ui/runtime.py` build_runtime() | 装配 12 个子系统——核心层的入口 |
 | ↓ 下游核心 | `ui/runtime.py` handle_line() | 后端收到 submit_line 后真正的处理逻辑 |
 | ↓ Agent 循环 | `engine/query.py` run_query() | 工具执行循环 |
