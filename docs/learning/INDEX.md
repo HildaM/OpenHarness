@@ -45,6 +45,15 @@
 └───────────────────────┬──────────────────────────────────┘
                         │
 ┌───────────────────────▼──────────────────────────────────┐
+│ 第五阶段：子系统层（了解「LLM 怎么调用的」）              │
+│                                                           │
+│   12 API 客户端深度剖析                                   │
+│                                                           │
+│   收获：Protocol 策略模式 + 三种客户端适配 + 流式传输     │
+│         + 重试机制 + 消息格式翻译 + OAuth 设备流          │
+└───────────────────────┬──────────────────────────────────┘
+                        │
+┌───────────────────────▼──────────────────────────────────┐
 │ 专题（解答学习过程中的深层疑问）                            │
 │                                                           │
 │   09 为什么用 yield                                        │
@@ -78,12 +87,18 @@
 | 07 | [07-engine-package.md](07-engine-package.md) | engine/ 包 6 文件全景 | engine/ 全部 6 个文件 | 25min | 文件间依赖图 + 对外接口清单 + 消息历史生命周期 + 7 个设计模式 |
 | 08 | [08-engine-compact-and-cost.md](08-engine-compact-and-cost.md) | 消息模型 + 对话压缩 + 成本追踪 | `messages.py` + `compact/` + `cost_tracker.py` + `token_estimation.py` | 30min | 3 种 ContentBlock + 两级压缩策略 + 阈值 167K + Token 估算 |
 
-### 第四阶段：子系统层
+### 第四阶段：子系统层（工具系统）
 
 | # | 文件名 | 主题 | 涉及源文件 | 时间 | 核心收获 |
 |---|--------|------|-----------|------|---------|
 | 10 | [10-tool-system.md](10-tool-system.md) | 工具系统深度剖析 | `tools/base.py` + `tools/__init__.py` + 6 个工具实现 + `engine/query.py` | 35min | 三层架构（抽象→实现→注册）+ Pydantic 一举三得 + MCP 适配器模式 + 自己写工具 |
 | 11 | [11-tool-deep-dive.md](11-tool-deep-dive.md) | 工具实现原理深入分析 | `tools/file_read_tool.py` + `tools/file_edit_tool.py` + `tools/bash_tool.py` + `utils/shell.py` | 25min | ToolInput 分离设计 + 文件读取全链路 + 命令执行链路 + 字符串替换为什么是最佳方案 |
+
+### 第五阶段：子系统层（API 客户端）
+
+| # | 文件名 | 主题 | 涉及源文件 | 时间 | 核心收获 |
+|---|--------|------|-----------|------|---------|
+| 12 | [12-api-client.md](12-api-client.md) | API 客户端深度剖析 | `api/client.py` + `api/openai_client.py` + `api/copilot_client.py` + `api/copilot_auth.py` + `api/provider.py` + `api/errors.py` + `api/usage.py` | 40min | Protocol 策略模式 + 三种客户端适配 + Anthropic↔OpenAI 格式翻译 + 流式传输 + 重试机制 + OAuth 设备流 |
 
 ### 专题
 
@@ -113,11 +128,11 @@
 
 | 指标 | 数值 |
 |------|------|
-| 文档总数 | 11 篇 |
-| 总字数 | ~215,000 字符 |
-| 预计总阅读时间 | ~4.5 小时 |
-| 涉及源文件 | ~18 个核心文件 |
-| 覆盖代码行 | ~2,800 行（engine + ui + prompts + tools + utils） |
+| 文档总数 | 12 篇 |
+| 总字数 | ~240,000 字符 |
+| 预计总阅读时间 | ~5 小时 |
+| 涉及源文件 | ~26 个核心文件 |
+| 覆盖代码行 | ~3,800 行（engine + ui + prompts + tools + api + utils） |
 
 ---
 
