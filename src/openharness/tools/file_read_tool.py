@@ -33,23 +33,30 @@ class FileReadTool(BaseTool):
         arguments: FileReadToolInput,
         context: ToolExecutionContext,
     ) -> ToolResult:
+        # 1. 路径解析：相对路径 → 基于 cwd 的绝对路径
         path = _resolve_path(context.cwd, arguments.path)
+
+        # 2. 存在性检查
         if not path.exists():
             return ToolResult(output=f"File not found: {path}", is_error=True)
         if path.is_dir():
             return ToolResult(output=f"Cannot read directory: {path}", is_error=True)
 
+        # 3. 二进制检测（包含 \x00 就认为是二进制文件）
         raw = path.read_bytes()
         if b"\x00" in raw:
             return ToolResult(output=f"Binary file cannot be read as text: {path}", is_error=True)
 
+        # 4. 读取并添加行号
         text = raw.decode("utf-8", errors="replace")
-        lines = text.splitlines()
+        lines = text.splitlines() # 按换行符拆成行列表，然后按 offset 去找到指定的行数内容
         selected = lines[arguments.offset : arguments.offset + arguments.limit]
         numbered = [
             f"{arguments.offset + index + 1:>6}\t{line}"
             for index, line in enumerate(selected)
         ]
+
+        # 5. 返回结果（LLM 会看到带行号的文件内容）
         if not numbered:
             return ToolResult(output=f"(no content in selected range for {path})")
         return ToolResult(output="\n".join(numbered))

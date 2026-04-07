@@ -31,7 +31,7 @@ class BashTool(BaseTool):
         cwd = Path(arguments.cwd).expanduser() if arguments.cwd else context.cwd
         try:
             process = await create_shell_subprocess(
-                arguments.command,
+                arguments.command, # ← 用户指定的命令，如 "ls -la" 或 "python main.py"
                 cwd=cwd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
