@@ -54,6 +54,15 @@
 └───────────────────────┬──────────────────────────────────┘
                         │
 ┌───────────────────────▼──────────────────────────────────┐
+│ 第六阶段：子系统层（了解「权限怎么控制的」）              │
+│                                                           │
+│   13 权限系统多层防线                                     │
+│                                                           │
+│   收获：8 级优先级决策链 + 三态返回 + 四种 UI 确认        │
+│         + 运行时热切换 + OS 沙箱 + Swarm 分布式权限       │
+└───────────────────────┬──────────────────────────────────┘
+                        │
+┌───────────────────────▼──────────────────────────────────┐
 │ 专题（解答学习过程中的深层疑问）                            │
 │                                                           │
 │   09 为什么用 yield                                        │
@@ -100,6 +109,18 @@
 |---|--------|------|-----------|------|---------|
 | 12 | [12-api-client.md](12-api-client.md) | API 客户端深度剖析 | `api/client.py` + `api/openai_client.py` + `api/copilot_client.py` + `api/copilot_auth.py` + `api/provider.py` + `api/errors.py` + `api/usage.py` | 40min | Protocol 策略模式 + 三种客户端适配 + Anthropic↔OpenAI 格式翻译 + 流式传输 + 重试机制 + OAuth 设备流 |
 
+### 第六阶段：子系统层（权限系统）
+
+| # | 文件名 | 主题 | 涉及源文件 | 时间 | 核心收获 |
+|---|--------|------|-----------|------|---------|
+| 13 | [13-permission-system.md](13-permission-system.md) | 权限系统多层防线 | `permissions/` + `config/settings.py` + `sandbox/adapter.py` + `swarm/permission_sync.py` + 4种 UI 实现 | 35min | 8 级优先级决策链 + 三态 PermissionDecision + 四种 UI 确认 + 运行时热切换 + OS 沙箱 |
+
+### 第七阶段：子系统层（多 Agent 协作）
+
+| # | 文件名 | 主题 | 涉及源文件 | 时间 | 核心收获 |
+|---|--------|------|-----------|------|---------|
+| 14 | [14-multi-agent-swarm.md](14-multi-agent-swarm.md) | 多 Agent 协作 Swarm 系统 | `swarm/` (10文件) + `coordinator/` (3文件) + `tasks/` (6文件) + agent/task/team 工具 | 50min | Leader-Worker 架构 + 4 种后端 + ContextVar 隔离 + 文件邮箱 + Git Worktree + 双信号取消 |
+
 ### 专题
 
 | # | 文件名 | 主题 | 时间 | 核心收获 |
@@ -128,11 +149,11 @@
 
 | 指标 | 数值 |
 |------|------|
-| 文档总数 | 12 篇 |
-| 总字数 | ~240,000 字符 |
-| 预计总阅读时间 | ~5 小时 |
-| 涉及源文件 | ~26 个核心文件 |
-| 覆盖代码行 | ~3,800 行（engine + ui + prompts + tools + api + utils） |
+| 文档总数 | 14 篇 |
+| 总字数 | ~300,000 字符 |
+| 预计总阅读时间 | ~6.5 小时 |
+| 涉及源文件 | ~55 个核心文件 |
+| 覆盖代码行 | ~10,500 行（engine + ui + prompts + tools + api + permissions + swarm + coordinator + tasks） |
 
 ---
 
