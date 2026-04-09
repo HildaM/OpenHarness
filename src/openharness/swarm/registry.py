@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shutil
@@ -360,6 +361,24 @@ class BackendRegistry:
             "backends": results,
             "total_count": available_count,
         }
+
+    async def shutdown_all(self, *, force: bool = False, timeout: float = 10.0) -> None:
+        """Best-effort shutdown of all registered backends that expose lifecycle cleanup."""
+        pending = []
+
+        for executor in self._backends.values():
+            shutdown_all = getattr(executor, "shutdown_all", None)
+            if shutdown_all is None:
+                continue
+            try:
+                result = shutdown_all(force=force, timeout=timeout)
+            except TypeError:
+                result = shutdown_all()
+            if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
+                pending.append(result)
+
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     def reset(self) -> None:
         """Clear detection cache and re-register defaults.

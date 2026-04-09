@@ -24,7 +24,14 @@ from openharness.engine.stream_events import (
     ToolExecutionStarted,
 )
 from openharness.tasks import get_task_manager
-from openharness.ui.runtime import build_runtime, close_runtime, handle_line, start_runtime
+from openharness.ui.runtime import (
+    build_runtime,
+    close_runtime,
+    handle_line,
+    mailbox_message_to_task_notification,
+    read_leader_notifications,
+    start_runtime,
+)
 
 
 @dataclass(frozen=True)
@@ -251,6 +258,7 @@ class OpenHarnessTerminalApp(App[None]):
         self.query_one("#composer", Input).focus()
         self._refresh_sidebars()
         self.set_interval(1.0, self._refresh_sidebars)
+        self.set_interval(0.25, lambda: asyncio.create_task(self._poll_leader_notifications()))
         if self._config.prompt:
             self.call_later(lambda: asyncio.create_task(self._process_line(self._config.prompt or "")))
 
@@ -303,6 +311,16 @@ class OpenHarnessTerminalApp(App[None]):
             self._busy = False
             composer.disabled = False
             composer.focus()
+
+    async def _poll_leader_notifications(self) -> None:
+        if self._bundle is None or self._busy:
+            return
+
+        mailbox, messages = await read_leader_notifications()
+        for msg in messages:
+            notification = mailbox_message_to_task_notification(msg)
+            await self._process_line(notification)
+            await mailbox.mark_read(msg.id)
 
     async def _print_system(self, message: str) -> None:
         self._append_line(f"system> {message}")

@@ -246,15 +246,19 @@ async def start_in_process_teammate(
 
     logger.debug("[in_process] %s: starting", agent_id)
 
+    task_status = "completed"
+    task_result: str | None = None
+    task_summary = f"{config.name} finished"
+
     try:
         ctx.status = "running"
 
         if query_context is not None:
-            await _run_query_loop(query_context, config, ctx, mailbox)
+            task_result = await _run_query_loop(query_context, config, ctx, mailbox)
+            if abort_controller.is_cancelled:
+                task_status = "killed"
+                task_summary = f"{config.name} was stopped"
         else:
-            # Minimal stub: log that we received the prompt and honour cancel.
-            # Replace this branch with a real QueryContext builder once the
-            # harness wires up the full engine for in-process teammates.
             logger.info(
                 "[in_process] %s: no query_context supplied — stub run for prompt: %.80s",
                 agent_id,
@@ -264,29 +268,45 @@ async def start_in_process_teammate(
             for _ in range(10):
                 if abort_controller.is_cancelled:
                     logger.debug("[in_process] %s: cancelled during stub run", agent_id)
+                    task_status = "killed"
+                    task_summary = f"{config.name} was stopped"
                     return
                 await asyncio.sleep(0.1)
 
     except asyncio.CancelledError:
+        task_status = "killed"
+        task_summary = f"{config.name} was stopped"
         logger.debug("[in_process] %s: task cancelled", agent_id)
         raise
-    except Exception:
+    except Exception as exc:
+        task_status = "failed"
+        task_result = str(exc)
+        task_summary = f"{config.name} failed: {type(exc).__name__}: {exc}"
         logger.exception("[in_process] %s: unhandled exception in agent loop", agent_id)
     finally:
         ctx.status = "stopped"
-        # Notify the leader that this teammate has gone idle / finished.
+        duration_ms = max(0, int((time.time() - ctx.started_at) * 1000))
+        usage = {
+            "total_tokens": ctx.total_tokens,
+            "tool_uses": ctx.tool_use_count,
+            "duration_ms": duration_ms,
+        }
         with contextlib.suppress(Exception):
             idle_msg = create_idle_notification(
                 sender=agent_id,
                 recipient="leader",
-                summary=f"{config.name} finished (tools={ctx.tool_use_count}, tokens={ctx.total_tokens})",
+                summary=task_summary,
+                status=task_status,
+                result=task_result,
+                usage=usage,
             )
             leader_mailbox = TeammateMailbox(team_name=config.team, agent_id="leader")
             await leader_mailbox.write(idle_msg)
 
         logger.debug(
-            "[in_process] %s: exiting (tools=%d, tokens=%d)",
+            "[in_process] %s: exiting (status=%s, tools=%d, tokens=%d)",
             agent_id,
+            task_status,
             ctx.tool_use_count,
             ctx.total_tokens,
         )
@@ -337,7 +357,7 @@ async def _run_query_loop(
     config: TeammateSpawnConfig,
     ctx: TeammateContext,
     mailbox: TeammateMailbox,
-) -> None:
+) -> str | None:
     """Drive :func:`~openharness.engine.query.run_query` until done or cancelled.
 
     Between turns we:
@@ -347,12 +367,14 @@ async def _run_query_loop(
     - Track tool_use_count and total_tokens.
     """
     # Deferred import to avoid circular dependencies at module load time.
-    from openharness.engine.query import run_query
     from openharness.engine.messages import ConversationMessage
+    from openharness.engine.query import run_query
+    from openharness.engine.stream_events import AssistantTurnComplete
 
     messages: list[ConversationMessage] = [
         ConversationMessage.from_user_text(config.prompt)
     ]
+    last_assistant_text: str | None = None
 
     async for event, usage in run_query(query_context, messages):
         # Track token usage if usage info is provided
@@ -360,6 +382,10 @@ async def _run_query_loop(
             with contextlib.suppress(AttributeError, TypeError):
                 ctx.total_tokens += getattr(usage, "input_tokens", 0)
                 ctx.total_tokens += getattr(usage, "output_tokens", 0)
+
+        if isinstance(event, AssistantTurnComplete):
+            text = event.message.text.strip()
+            last_assistant_text = text or last_assistant_text
 
         # Track tool use events
         with contextlib.suppress(AttributeError, TypeError):
@@ -372,12 +398,12 @@ async def _run_query_loop(
                 "[in_process] %s: abort_controller cancelled, stopping query loop",
                 ctx.agent_id,
             )
-            return
+            return last_assistant_text
 
         # Drain mailbox — handle shutdown requests immediately
         should_stop = await _drain_mailbox(mailbox, ctx)
         if should_stop:
-            return
+            return last_assistant_text
 
         # Drain message queue and inject as new turns
         while not ctx.message_queue.empty():
@@ -390,9 +416,10 @@ async def _run_query_loop(
                 ctx.agent_id,
                 queued.from_agent,
             )
-            messages.append(ConversationMessage(role="user", content=queued.text))
+            messages.append(ConversationMessage.from_user_text(queued.text))
 
     ctx.status = "idle"
+    return last_assistant_text
 
 
 # ---------------------------------------------------------------------------
@@ -459,6 +486,8 @@ class InProcessBackend:
 
         abort_controller = TeammateAbortController()
 
+        query_context = config.metadata.get("query_context") if config.metadata else None
+
         # asyncio.create_task() copies the current Context automatically,
         # so each Task starts with an independent ContextVar state.
         task = asyncio.create_task(
@@ -466,6 +495,7 @@ class InProcessBackend:
                 config=config,
                 agent_id=agent_id,
                 abort_controller=abort_controller,
+                query_context=query_context,
             ),
             name=f"teammate-{agent_id}",
         )

@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,8 +32,20 @@ from openharness.api.copilot_client import CopilotClient
 from openharness.api.openai_client import OpenAICompatibleClient
 from openharness.api.provider import auth_status, detect_provider
 from openharness.bridge import get_bridge_manager
-from openharness.commands import CommandContext, CommandResult, create_default_command_registry
+from openharness.commands import (
+    CommandContext,
+    CommandRegistry,
+    CommandResult,
+    create_default_command_registry,
+)
 from openharness.config import get_config_file_path, load_settings
+from openharness.config.settings import PermissionSettings
+from openharness.coordinator.coordinator_mode import (
+    TaskNotification,
+    format_task_notification,
+    get_coordinator_tools,
+    is_coordinator_mode,
+)
 from openharness.engine import QueryEngine
 from openharness.engine.messages import ConversationMessage, ToolResultBlock, ToolUseBlock
 from openharness.engine.query import MaxTurnsExceeded
@@ -46,6 +59,7 @@ from openharness.plugins import load_plugins
 from openharness.prompts import build_runtime_system_prompt
 from openharness.state import AppState, AppStateStore
 from openharness.services.session_storage import save_session_snapshot
+from openharness.swarm.mailbox import MailboxMessage, TeammateMailbox
 from openharness.tools import ToolRegistry, create_default_tool_registry
 from openharness.keybindings import load_keybindings
 
@@ -83,7 +97,7 @@ class RuntimeBundle:
     app_state: AppStateStore
     hook_executor: HookExecutor
     engine: QueryEngine
-    commands: object
+    commands: CommandRegistry
     external_api_client: bool
     session_id: str = ""
 
@@ -230,7 +244,12 @@ async def build_runtime(
     # 注册 36 个内置工具（Bash, FileRead, Grep, WebFetch, Agent, ...）
     # 如果有 MCP 服务器，为每个 MCP 工具创建 McpToolAdapter 并注册
     # 最终 registry 包含所有可用工具，工具定义（JSON Schema）会发送给 LLM
-    tool_registry = create_default_tool_registry(mcp_manager)
+    full_tool_registry = create_default_tool_registry(mcp_manager)
+    tool_registry = (
+        full_tool_registry.filtered(allow=get_coordinator_tools())
+        if is_coordinator_mode()
+        else full_tool_registry
+    )
 
     # ──── 第 6 步：检测 Provider 信息 ────
     # 根据 base_url 和 model 名自动识别当前 Provider（如 moonshot、dashscope）
@@ -285,11 +304,17 @@ async def build_runtime(
     #   ① 角色定义 ② 环境信息 ③ Fast Mode ④ Effort/Passes
     #   ⑤ 技能列表 ⑥ CLAUDE.md ⑦ Issue/PR 上下文 ⑧ 记忆检索
     _system_prompt = _debug_prompt  # 复用前面 debug 阶段已构建的 Prompt
+    permission_settings = (
+        _extend_allowed_tools(settings.permission, get_coordinator_tools())
+        if is_coordinator_mode()
+        else settings.permission
+    )
+    permission_checker = PermissionChecker(permission_settings)
 
     engine = QueryEngine(
         api_client=resolved_api_client,
         tool_registry=tool_registry,
-        permission_checker=PermissionChecker(settings.permission),
+        permission_checker=permission_checker,
         cwd=cwd,
         model=settings.model,
         system_prompt=_system_prompt,
@@ -299,8 +324,24 @@ async def build_runtime(
         ask_user_prompt=ask_user_prompt,
         hook_executor=hook_executor,
         # tool_metadata 通过 ToolExecutionContext 传递给工具，
-        # 让工具能访问 MCP 管理器和 Bridge 管理器
-        tool_metadata={"mcp_manager": mcp_manager, "bridge_manager": bridge_manager},
+        # 让工具能访问运行时依赖，并在 in-process worker 中复用完整上下文
+        tool_metadata={
+            "mcp_manager": mcp_manager,
+            "bridge_manager": bridge_manager,
+            "full_tool_registry": full_tool_registry,
+            "api_client": resolved_api_client,
+            "permission_checker": permission_checker,
+            "permission_settings": permission_settings,
+            "permission_prompt": permission_prompt,
+            "ask_user_prompt": ask_user_prompt,
+            "hook_executor": hook_executor,
+            "system_prompt": _system_prompt,
+            "model": settings.model,
+            "max_tokens": settings.max_tokens,
+            "max_turns": settings.max_turns,
+            "session_id": "main",
+            "tool_metadata": {"mcp_manager": mcp_manager, "bridge_manager": bridge_manager},
+        },
     )
 
     # ──── 第 10 步：恢复会话历史（可选） ────
@@ -350,6 +391,18 @@ async def close_runtime(bundle: RuntimeBundle) -> None:
     交互模式: backend_host.py run() 的 finally 块调用
     非交互模式: app.py run_print_mode() 的 finally 块调用
     """
+    from openharness.swarm.registry import get_backend_registry
+    from openharness.swarm.team_lifecycle import cleanup_session_teams
+
+    registry = get_backend_registry()
+    try:
+        with contextlib.suppress(Exception):
+            await cleanup_session_teams()
+        with contextlib.suppress(Exception):
+            await registry.shutdown_all(force=True, timeout=2.0)
+    finally:
+        registry.reset()
+
     await bundle.mcp_manager.close()     # 关闭所有 MCP 服务器连接
     await bundle.hook_executor.execute(
         HookEvent.SESSION_END,
@@ -367,6 +420,15 @@ def _last_user_text(messages: list[ConversationMessage]) -> str:
         if msg.role == "user" and msg.text.strip():
             return msg.text.strip()
     return ""
+
+
+def _extend_allowed_tools(
+    permission_settings: PermissionSettings,
+    tool_names: list[str],
+) -> PermissionSettings:
+    """Return a copy of permission settings with extra auto-allowed tools."""
+    merged = list(dict.fromkeys([*permission_settings.allowed_tools, *tool_names]))
+    return permission_settings.model_copy(update={"allowed_tools": merged})
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -462,6 +524,30 @@ def sync_app_state(bundle: RuntimeBundle) -> None:
         output_style=settings.output_style,
         keybindings=load_keybindings(),
     )
+
+
+async def read_leader_notifications(
+    *,
+    team_name: str = "default",
+) -> tuple[TeammateMailbox, list[MailboxMessage]]:
+    """Read unread leader mailbox messages without consuming them."""
+    mailbox = TeammateMailbox(team_name=team_name, agent_id="leader")
+    messages = await mailbox.read_all(unread_only=True)
+    return mailbox, [msg for msg in messages if msg.type == "idle_notification"]
+
+
+def mailbox_message_to_task_notification(msg: MailboxMessage) -> str:
+    """Translate a leader mailbox message into canonical coordinator XML."""
+    payload = msg.payload if isinstance(msg.payload, dict) else {}
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else None
+    notification = TaskNotification(
+        task_id=msg.sender,
+        status=str(payload.get("status") or "completed"),
+        summary=str(payload.get("summary") or f"{msg.sender} finished"),
+        result=str(payload.get("result")) if payload.get("result") is not None else None,
+        usage={str(k): int(v) for k, v in usage.items()} if usage else None,
+    )
+    return format_task_notification(notification)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

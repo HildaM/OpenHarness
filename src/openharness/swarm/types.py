@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     pass
@@ -305,6 +305,9 @@ class TeammateSpawnConfig:
 
     subscriptions: list[str] = field(default_factory=list)
     """Event topics this teammate subscribes to."""
+
+    metadata: dict[str, Any] = field(default_factory=dict)
+    """Backend-specific runtime metadata (e.g. in-process QueryContext)."""
 
 
 # ---------------------------------------------------------------------------

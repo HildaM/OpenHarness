@@ -24,6 +24,11 @@ from pathlib import Path
 
 from openharness.config.paths import get_project_issue_file, get_project_pr_comments_file
 from openharness.config.settings import Settings
+from openharness.coordinator.coordinator_mode import (
+    get_coordinator_system_prompt,
+    get_coordinator_user_context,
+    is_coordinator_mode,
+)
 from openharness.memory import find_relevant_memories, load_memory_prompt
 from openharness.prompts.claudemd import load_claude_md_prompt
 from openharness.prompts.system_prompt import build_system_prompt
@@ -106,10 +111,12 @@ def build_runtime_system_prompt(
 
     # ──── 片段 ①：基础角色定义 + 环境信息 ────
     # build_system_prompt() 内部逻辑：
-    #   - 如果 settings.system_prompt 不为 None → 完全替换基础 Prompt（用户自定义）
+    #   - coordinator 模式优先使用专用 Prompt
+    #   - 否则如果 settings.system_prompt 不为 None → 完全替换基础 Prompt（用户自定义）
     #   - 否则使用内置的 _BASE_SYSTEM_PROMPT（~55 行的角色定义和行为准则）
     #   - 拼接 # Environment 段落（OS、Shell、Git、Python 版本、日期等）
-    sections = [build_system_prompt(custom_prompt=settings.system_prompt, cwd=str(cwd))]
+    base_prompt = get_coordinator_system_prompt() if is_coordinator_mode() else settings.system_prompt
+    sections = [build_system_prompt(custom_prompt=base_prompt, cwd=str(cwd))]
 
     # ──── 片段 ②：Fast Mode 提示（可选） ────
     # 当用户在 settings.json 中设置 fast_mode: true 时生效
@@ -129,6 +136,11 @@ def build_runtime_system_prompt(
         f"- Passes: {settings.passes}\n"
         "Adjust depth and iteration count to match these settings while still completing the task."
     )
+
+    coordinator_user_context = get_coordinator_user_context()
+    worker_tools_context = coordinator_user_context.get("workerToolsContext")
+    if worker_tools_context:
+        sections.append(f"# Worker Tools Context\n{worker_tools_context}")
 
     # ──── 片段 ④：可用技能列表 ────
     # 让 LLM 知道有哪些技能可以按需加载

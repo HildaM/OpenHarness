@@ -70,6 +70,28 @@ class ToolRegistry:
         """Return all registered tools."""
         return list(self._tools.values())
 
+    def filtered(
+        self,
+        *,
+        allow: set[str] | list[str] | None = None,
+        disallow: set[str] | list[str] | None = None,
+    ) -> "ToolRegistry":
+        """Return a shallow-copied registry filtered by tool name.
+
+        Tool instances are reused; only the registry mapping is copied.
+        """
+        allowed = set(allow) if allow is not None else None
+        denied = set(disallow or ())
+
+        registry = ToolRegistry()
+        for tool in self._tools.values():
+            if allowed is not None and tool.name not in allowed:
+                continue
+            if tool.name in denied:
+                continue
+            registry.register(tool)
+        return registry
+
     def to_api_schema(self) -> list[dict[str, Any]]:
         """Return all tool schemas in API format."""
         return [tool.to_api_schema() for tool in self._tools.values()]

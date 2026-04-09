@@ -267,12 +267,24 @@ def create_shutdown_request(sender: str, recipient: str) -> MailboxMessage:
 
 
 def create_idle_notification(
-    sender: str, recipient: str, summary: str
+    sender: str,
+    recipient: str,
+    summary: str,
+    *,
+    status: str = "completed",
+    result: str | None = None,
+    usage: dict[str, Any] | None = None,
 ) -> MailboxMessage:
-    """Create an idle-notification message with a brief summary."""
-    return _make_message(
-        "idle_notification", sender, recipient, {"summary": summary}
-    )
+    """Create an idle-notification message with coordinator-facing task details."""
+    payload: dict[str, Any] = {
+        "summary": summary,
+        "status": status,
+    }
+    if result is not None:
+        payload["result"] = result
+    if usage:
+        payload["usage"] = usage
+    return _make_message("idle_notification", sender, recipient, payload)
 
 
 # ---------------------------------------------------------------------------

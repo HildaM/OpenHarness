@@ -57,7 +57,14 @@ from openharness.engine.stream_events import (
 )
 from openharness.tasks import get_task_manager
 from openharness.ui.protocol import BackendEvent, FrontendRequest, TranscriptItem
-from openharness.ui.runtime import build_runtime, close_runtime, handle_line, start_runtime
+from openharness.ui.runtime import (
+    build_runtime,
+    close_runtime,
+    handle_line,
+    mailbox_message_to_task_notification,
+    read_leader_notifications,
+    start_runtime,
+)
 
 # 协议前缀：后端发给前端的每一行都以此开头，前端据此区分协议消息和普通输出
 _PROTOCOL_PREFIX = "OHJSON:"
@@ -106,6 +113,7 @@ class ReactBackendHost:
 
         # ── 通信相关 ──
         self._write_lock = asyncio.Lock()          # stdout 写锁（防止并发写入交织）
+        self._processing_lock = asyncio.Lock()     # 统一串行化用户输入与后台 task-notification 处理
         self._request_queue: asyncio.Queue[FrontendRequest] = asyncio.Queue()  # 前端请求队列
 
         # ── 异步交互相关（权限确认 / 用户提问）──
@@ -155,6 +163,7 @@ class ReactBackendHost:
         # ────── 阶段 2：事件循环 ──────
         # 启动后台 stdin 读取任务（在独立线程中阻塞读取，不影响事件循环）
         reader = asyncio.create_task(self._read_requests())
+        notification_poller = asyncio.create_task(self._poll_leader_notifications())
         try:
             while self._running:
                 # 从队列取一个前端请求（阻塞等待）
@@ -199,11 +208,12 @@ class ReactBackendHost:
                     continue
 
                 # 标记为忙碌 → 处理 → 无论成败都解除忙碌
-                self._busy = True
-                try:
-                    should_continue = await self._process_line(line)   # ← 进入核心处理
-                finally:
-                    self._busy = False
+                async with self._processing_lock:
+                    self._busy = True
+                    try:
+                        should_continue = await self._process_line(line)   # ← 进入核心处理
+                    finally:
+                        self._busy = False
                 if not should_continue:
                     # handle_line 返回 False = 用户执行了 /exit
                     await self._emit(BackendEvent(type="shutdown"))
@@ -212,8 +222,11 @@ class ReactBackendHost:
         # ────── 阶段 3：清理 ──────
         finally:
             reader.cancel()                            # 取消 stdin 读取任务
+            notification_poller.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await reader                           # 等待取消完成（忽略 CancelledError）
+            with contextlib.suppress(asyncio.CancelledError):
+                await notification_poller
             if self._bundle is not None:
                 await close_runtime(self._bundle)      # 关闭 MCP 连接 + 触发 SESSION_END 钩子
         return 0
@@ -261,6 +274,34 @@ class ReactBackendHost:
         async with self._write_lock:
             sys.stdout.write(_PROTOCOL_PREFIX + event.model_dump_json() + "\n")
             sys.stdout.flush()  # 立即刷新，不等 Python 缓冲区满
+
+    async def _poll_leader_notifications(self) -> None:
+        """后台轮询 leader 邮箱，并把 worker 结果当成新的 user turn 注入。"""
+        while self._running:
+            await asyncio.sleep(0.25)
+            await self._process_leader_notifications_once()
+
+    async def _process_leader_notifications_once(self) -> None:
+        """Process currently queued leader notifications exactly once."""
+        if self._bundle is None or self._busy:
+            return
+
+        async with self._processing_lock:
+            if self._bundle is None or self._busy:
+                return
+            mailbox, messages = await read_leader_notifications()
+            for msg in messages:
+                notification = mailbox_message_to_task_notification(msg)
+                self._busy = True
+                try:
+                    should_continue = await self._process_line(notification)
+                finally:
+                    self._busy = False
+                await mailbox.mark_read(msg.id)
+                if not should_continue:
+                    self._running = False
+                    await self._emit(BackendEvent(type="shutdown"))
+                    return
 
     # ═══════════════════════════════════════════════════════════
     # 第 3 组：业务处理
