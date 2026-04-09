@@ -71,287 +71,351 @@
 
 ---
 
-## 二、5 层架构逐层剖析
+## 二、5 层架构逐层剖析——精确到行号的调用链
 
-### 第 1 层：Coordinator 协调器——"总指挥"
+### 第 1 层：Coordinator 协调器
 
-#### 2.1 7 个内置 Agent 定义
+#### 2.1 AgentDefinition 数据模型
 
-```python
-# coordinator/agent_definitions.py — 7 个内置 Agent
-_BUILTIN_AGENTS = [
-    AgentDefinition(name="general-purpose", tools=["*"], ...),         # 通用型
-    AgentDefinition(name="Explore",                                    # 只读探索
-        disallowed_tools=["file_edit", "file_write", ...],
-        model="haiku"),
-    AgentDefinition(name="Plan",                                       # 只读规划
-        disallowed_tools=["file_edit", "file_write", ...]),
-    AgentDefinition(name="worker", tools=None, ...),                   # 实现型
-    AgentDefinition(name="verification",                               # 验证型
-        disallowed_tools=["file_edit", "file_write", ...],
-        background=True, color="red"),
-    AgentDefinition(name="statusline-setup", tools=["Read", "Edit"]),  # 配置型
-    AgentDefinition(name="claude-code-guide",                          # 指南型
-        tools=["Glob", "Grep", "Read", "WebFetch", "WebSearch"],
-        permission_mode="dontAsk"),
-]
-```
-
-**关键设计**：每个 Agent 通过 `tools` / `disallowed_tools` 限制能力范围——Explore 不能写，verification 不能改，guide 只能搜。
-
-#### 2.2 Agent 定义加载的三级覆盖
+> 📄 `coordinator/agent_definitions.py:60-134` — 43 个字段的 Pydantic 模型
 
 ```python
-# coordinator/agent_definitions.py:905-945
-def get_all_agent_definitions():
-    agent_map = {}
-    # 1. 内置 Agent（最低优先级）
-    for agent in get_builtin_agent_definitions():
-        agent_map[agent.name] = agent
-    # 2. 用户自定义 (~/.openharness/agents/*.md)
-    for agent in load_agents_dir(_get_user_agents_dir()):
-        agent_map[agent.name] = agent          # 同名覆盖
-    # 3. 插件 Agent（最高优先级）
-    for plugin in load_plugins(settings, cwd):
-        for agent_def in plugin.agents:
-            agent_map[agent_def.name] = agent_def
-    return list(agent_map.values())
+class AgentDefinition(BaseModel):
+    name: str                                    # L89: 路由键 (如 "Explore", "worker")
+    description: str                             # L90: 何时使用此 Agent
+    system_prompt: str | None = None             # L93: 角色 System Prompt
+    tools: list[str] | None = None               # L94: None=全部工具, ["*"]=同上
+    disallowed_tools: list[str] | None = None    # L95: 黑名单
+    model: str | None = None                     # L98: 模型覆盖 (如 "haiku")
+    permission_mode: str | None = None           # L102: "dontAsk" / "plan" / ...
+    color: str | None = None                     # L116: UI 颜色
+    background: bool = False                     # L119: 后台任务标记
+    permissions: list[str] = []                  # L132: 额外权限规则
 ```
 
-用户可以用 `.md` + YAML frontmatter 自定义 Agent：
+#### 2.2 7 个内置 Agent（各有专属 System Prompt）
 
-```markdown
----
-name: my-reviewer
-description: Code review specialist
-tools: Read, Glob, Grep
-model: haiku
-permissionMode: dontAsk
-color: purple
----
-You are a code review agent. Focus on finding bugs, security issues, and code smell.
+| Agent 名 | 定义位置 | System Prompt 位置 | 核心约束 |
+|----------|---------|-------------------|---------|
+| `general-purpose` | L160 | L160-163 `_GENERAL_PURPOSE_SYSTEM_PROMPT` | 无限制，通用型 |
+| `Explore` | L165 | L165-199 `_EXPLORE_SYSTEM_PROMPT` | **只读！** 禁止 file_edit/file_write/bash 写操作 |
+| `Plan` | L199 | L199-368 `_PLAN_SYSTEM_PROMPT` | 只读探索 + 输出结构化实施方案 |
+| `worker` | L368 | 无专属 prompt（继承通用） | 全部工具可用 |
+| `verification` | L368 | 无专属 prompt | 只读 + `background=True` + `color="red"` |
+| `statusline-setup` | L369 | L369-451 `_STATUSLINE_SYSTEM_PROMPT` | 只有 Read + Edit |
+| `claude-code-guide` | L451 | L451-505 `_CLAUDE_CODE_GUIDE_SYSTEM_PROMPT` | Glob/Grep/Read/WebFetch/WebSearch |
+
+#### 2.3 Agent 定义的三级覆盖加载
+
+> 📄 `coordinator/agent_definitions.py:905-945`
+
+```
+加载优先级（同名覆盖）：内置 Agent < 用户 ~/.openharness/agents/*.md < 插件 Agent
 ```
 
-#### 2.3 Coordinator 系统提示词
+用户自定义用 `.md` + YAML frontmatter 格式，`parse_agent_markdown()` 函数负责解析。
+
+#### 2.4 Coordinator 系统提示词
+
+> 📄 `coordinator/coordinator_mode.py:251-519` — 270 行的超长 Prompt
+
+**关键内容**（逐行定位）：
+- **L267-277**: 角色定义（"你是协调者，不写代码"）
+- **L279-284**: 可用工具（只有 `agent` + `send_message` + `task_stop`）
+- **L286-291**: 使用 agent 工具的规则（不要用 worker 检查另一个 worker）
+- **L293-311**: `<task-notification>` XML 格式定义（Worker 完成后的结果通知）
+- **L349-368**: 四阶段工作流（Research → Synthesis → Implementation → Verification）
+- **L402-484**: 编写 Worker Prompt 的指南（**最核心**——"Workers can't see your conversation"）
 
 ```python
-# coordinator/coordinator_mode.py:267-519 — 超长的协调者系统提示词
-"""You are Claude Code, an AI assistant that orchestrates software engineering tasks.
+# L185-188 — 如何判断是否处于 Coordinator 模式
+def is_coordinator_mode() -> bool:
+    val = os.environ.get("CLAUDE_CODE_COORDINATOR_MODE", "")
+    return val.lower() in {"1", "true", "yes"}
 
-## Your Tools
-- agent      — Spawn a new worker
-- send_message — Continue an existing worker
-- task_stop  — Stop a running worker
-
-## Task Workflow
-| Phase          | Who         | Purpose                      |
-|----------------|-------------|------------------------------|
-| Research       | Workers     | 并行调查代码库               |
-| Synthesis      | Coordinator | 你综合研究结果，制定实施方案   |
-| Implementation | Workers     | 按方案做具体修改              |
-| Verification   | Workers     | 测试验证修改是否正确          |
-
-## Writing Worker Prompts
-Workers can't see your conversation. Every prompt must be self-contained.
-Never write "based on your findings" — synthesize the findings yourself."""
+# L215-217 — Coordinator 只有 3 个工具
+def get_coordinator_tools() -> list[str]:
+    return ["agent", "send_message", "task_stop"]
 ```
-
-**核心哲学**：Coordinator 不写代码，只做**综合和决策**。Worker 做具体的搜索、编码、测试。
 
 ---
 
-### 第 2 层：Tools 工具层——LLM 的操控接口
+### 第 2 层：Tools 工具层——精确调用链
 
-#### 2.4 AgentTool — 生成 Worker
+#### 2.5 AgentTool：LLM → spawn Worker 的完整链路
 
+> 📄 `tools/agent_tool.py` (98 行)
+
+**入参模型** `AgentToolInput`（L18-33）：
 ```python
-# tools/agent_tool.py:43-97
-async def execute(self, arguments, context):
-    # 1. 查找 Agent 定义
-    agent_def = get_agent_definition(arguments.subagent_type)
-
-    # 2. 选择执行后端（优先 in_process，其次 subprocess）
-    registry = get_backend_registry()
-    executor = registry.get_executor("in_process")   # 或 fallback
-
-    # 3. 构建 spawn 配置
-    config = TeammateSpawnConfig(
-        name=agent_name,
-        team=team,
-        prompt=arguments.prompt,           # Coordinator 写的具体任务描述
-        cwd=str(context.cwd),
-        model=agent_def.model,             # 继承 Agent 定义的模型
-        system_prompt=agent_def.system_prompt,
-    )
-
-    # 4. 生成！
-    result = await executor.spawn(config)
-    return ToolResult(output=f"Spawned agent {result.agent_id} (task_id={result.task_id})")
+class AgentToolInput(BaseModel):
+    description: str       # L21: "调查认证代码"
+    prompt: str            # L22: Worker 要执行的完整任务描述 ← 这是唯一传给 Worker 的上下文！
+    subagent_type: str     # L23: "Explore" / "worker" / "verification"
+    model: str | None      # L27: 模型覆盖
+    team: str | None       # L29: 团队名
+    mode: str = "local_agent"  # L30: 执行模式
 ```
 
-#### 2.5 SendMessageTool — 与 Worker 通信
+**execute() 内部的 4 步调用链**（L43-97）：
 
-```python
-# tools/send_message_tool.py:31-62
-async def execute(self, arguments, context):
-    if "@" in arguments.task_id:
-        # Swarm Agent 格式: "worker@myteam"
-        return await self._send_swarm_message(arguments.task_id, arguments.message)
-    else:
-        # 普通 Task 格式: 直接写 stdin
-        await get_task_manager().write_to_task(arguments.task_id, arguments.message)
+```
+步骤 1 (L50-53): 查找 Agent 定义
+  agent_tool.py:52  →  agent_definitions.py:get_agent_definition()
+                       → 从 7 个内置 + 用户 + 插件中按名称查找
 
-async def _send_swarm_message(self, agent_id, message):
-    executor = get_backend_registry().get_executor("in_process")
-    await executor.send_message(agent_id, TeammateMessage(text=message, from_agent="coordinator"))
+步骤 2 (L59-67): 选择后端
+  agent_tool.py:60  →  registry.py:400  get_backend_registry()  (模块单例)
+  agent_tool.py:62  →  registry.py:270  get_executor("in_process")
+                       → 如果 KeyError:
+  agent_tool.py:65  →  registry.py:270  get_executor("subprocess")
+
+步骤 3 (L69-78): 构建 TeammateSpawnConfig
+  TeammateSpawnConfig 定义在 swarm/types.py:257-307
+  关键字段：
+    prompt = arguments.prompt          # L72: 唯一传给 Worker 的对话内容
+    cwd = str(context.cwd)             # L73: 继承 Leader 的工作目录
+    model = arguments.model or agent_def.model  # L75: 模型继承或覆盖
+    system_prompt = agent_def.system_prompt      # L76: Agent 定义的角色提示词
+    permissions = agent_def.permissions          # L77: 权限列表
+
+步骤 4 (L80-97): 执行 spawn
+  agent_tool.py:81  →  in_process.py:436  InProcessBackend.spawn(config)
+                   或→  subprocess_backend.py:47  SubprocessBackend.spawn(config)
 ```
 
-**两种路由**：`@` 符号区分 Swarm Agent（邮箱通信）和普通 Task（stdin 管道通信）。
+#### 2.6 SendMessageTool：Leader → Worker 消息路由
+
+> 📄 `tools/send_message_tool.py` (63 行)
+
+**两种路由**（L31-40）——按 `@` 符号区分：
+
+```
+路由 A: task_id 包含 "@"（如 "Explore@default"）→ Swarm Agent 路由
+  send_message_tool.py:34-35
+    → L42 _send_swarm_message()
+      → L44-52 get_backend_registry().get_executor("in_process")  [registry.py:400→270]
+      → L54 构建 TeammateMessage(text=message, from_agent="coordinator")  [types.py:336-343]
+      → L56 executor.send_message(agent_id, msg)
+        → in_process.py:494-527  InProcessBackend.send_message()
+          → L514-526 构建 MailboxMessage(type="user_message", ...)  [mailbox.py:37-47]
+          → L525-526 TeammateMailbox(team, agent_name).write(msg)  [mailbox.py:122-153]
+              → L140-149 _write_atomic(): fcntl.flock + .tmp + os.rename（原子写入）
+
+路由 B: 普通 task_id → Legacy Task 路由
+  send_message_tool.py:36-40
+    → get_task_manager().write_to_task(task_id, message)  [tasks/manager.py]
+    → 直接写 stdin 管道
+```
 
 ---
 
-### 第 3 层：Swarm 核心层——后端抽象与通信
+### 第 3 层：Swarm 核心层
 
-#### 2.6 TeammateExecutor Protocol — 后端接口
+#### 2.7 TeammateExecutor Protocol
+
+> 📄 `swarm/types.py:351-382` — 后端统一接口
 
 ```python
-# swarm/types.py:351-382
 @runtime_checkable
 class TeammateExecutor(Protocol):
-    type: BackendType
-
-    def is_available(self) -> bool: ...
-    async def spawn(self, config: TeammateSpawnConfig) -> SpawnResult: ...
-    async def send_message(self, agent_id: str, message: TeammateMessage) -> None: ...
-    async def shutdown(self, agent_id: str, *, force: bool = False) -> bool: ...
+    type: BackendType                     # L358: "subprocess" | "in_process" | "tmux" | "iterm2"
+    def is_available(self) -> bool: ...   # L360
+    async def spawn(self, config: TeammateSpawnConfig) -> SpawnResult: ...      # L364
+    async def send_message(self, agent_id: str, message: TeammateMessage) -> None: ...  # L368
+    async def shutdown(self, agent_id: str, *, force: bool = False) -> bool: ...  # L372
 ```
 
-又是 Protocol 模式！和 `SupportsStreamingMessages` 一样的设计——只看方法签名，不要求继承。
+**隐式实现**（Protocol 模式，不需要写继承声明）：
+- `InProcessBackend`（`in_process.py:413`）
+- `SubprocessBackend`（`subprocess_backend.py:28`）
 
-#### 2.7 BackendRegistry — 后端选择
+#### 2.8 BackendRegistry — 单例 + 自动检测
 
-```python
-# swarm/registry.py:128-183
-def detect_backend(self) -> BackendType:
-    # 优先级 1: in_process（POSIX 平台，asyncio Task，零外部依赖）
-    if self._in_process_fallback_active:
-        return "in_process"
-    # 优先级 2: tmux（在 tmux 会话内，可视化调试）
-    if _detect_tmux() and "tmux" in self._backends:
-        return "tmux"
-    # 优先级 3: subprocess（永远可用，安全 fallback）
-    return "subprocess"
+> 📄 `swarm/registry.py` (411 行)
+
+```
+模块单例（L397-405）:
+  _registry: BackendRegistry | None = None
+  get_backend_registry() → 首次调用创建，后续复用
+
+初始化（L112-117 __init__ → L379-391 _register_defaults）:
+  始终注册: SubprocessBackend  [subprocess_backend.py:28]
+  POSIX 平台额外注册: InProcessBackend  [in_process.py:413]
+  条件: get_platform_capabilities().supports_swarm_mailbox == True
+
+自动检测优先级（L128-183 detect_backend）:
+  ① in_process_fallback_active? → "in_process"           [L148-157]
+  ② _detect_tmux() + tmux 已注册? → "tmux"               [L159-169]
+  ③ 兜底 → "subprocess"                                   [L176-183]
 ```
 
-#### 2.8 四种后端对比
+#### 2.9 四种后端对比
 
-| 后端 | 进程模型 | 通信方式 | 隔离机制 | 适用场景 |
-|------|---------|---------|---------|---------|
-| **in_process** | asyncio.Task（同进程） | ContextVar + 文件邮箱 | ContextVar 任务隔离 | 默认首选（POSIX） |
-| **subprocess** | 独立子进程 | stdin/stdout JSON | 进程隔离 | 通用 fallback |
-| **tmux** | tmux pane | 文件邮箱 | pane 隔离 | 可视化调试 |
-| **iterm2** | iTerm2 tab | 文件邮箱 | tab 隔离 | macOS 可视化 |
+| 后端 | 类定义位置 | spawn 实现 | 通信方式 | 隔离机制 |
+|------|-----------|-----------|---------|---------|
+| **in_process** | `in_process.py:413` | L436-492 `asyncio.create_task()` | ContextVar + 文件邮箱 | ContextVar copy-on-create |
+| **subprocess** | `subprocess_backend.py:28` | L47-94 `TaskManager.create_agent_task()` | stdin/stdout JSON | 进程隔离 |
+| **tmux** | 可扩展（未内置） | — | 文件邮箱 | pane 隔离 |
+| **iterm2** | 可扩展（未内置） | — | 文件邮箱 | tab 隔离 |
 
 ---
 
-### 第 4 层：InProcessBackend 深度剖析——最核心的后端实现
+### 第 4 层：InProcessBackend 深度剖析
 
-#### 2.9 ContextVar 隔离——Python 版 AsyncLocalStorage
+#### 2.10 ContextVar 隔离
+
+> 📄 `swarm/in_process.py:173-188`
 
 ```python
-# swarm/in_process.py:173-188
-_teammate_context_var: ContextVar[TeammateContext | None] = ContextVar(
+_teammate_context_var: ContextVar[TeammateContext | None] = ContextVar(  # L173
     "_teammate_context_var", default=None
 )
-
-def get_teammate_context() -> TeammateContext | None:
+def get_teammate_context() -> TeammateContext | None:  # L178 — 任何代码都能调用
     return _teammate_context_var.get()
-
-def set_teammate_context(ctx: TeammateContext) -> None:
+def set_teammate_context(ctx: TeammateContext) -> None:  # L186 — 只在 start_in_process_teammate 调用
     _teammate_context_var.set(ctx)
 ```
 
-**为什么用 ContextVar？** 当多个 Agent 在同一个进程中以 asyncio Task 并发运行时，每个 Task 需要知道自己的身份（agent_id、team、abort 信号等）。`ContextVar` 就像 Go 的 goroutine-local storage 或 Node.js 的 `AsyncLocalStorage`——每个 Task 看到自己独立的上下文副本。
+**TeammateContext 数据结构**（L113-170）：
+| 字段 | 行号 | 用途 |
+|------|------|------|
+| `agent_id` | L121 | 唯一标识 "agentName@teamName" |
+| `agent_name` | L124 | 人可读名 "researcher" |
+| `team_name` | L127 | 所属团队 |
+| `abort_controller` | L139 | 双信号取消控制器 |
+| `message_queue` | L144 | 内存消息队列（Leader 发来的消息暂存于此） |
+| `status` | L153 | "starting" → "running" → "idle" → "stopped" |
+| `tool_use_count` | L159 | 累计工具调用次数 |
+| `total_tokens` | L162 | 累计 Token 用量 |
 
-#### 2.10 双信号取消机制
+#### 2.11 双信号取消机制
+
+> 📄 `swarm/in_process.py:52-102`
 
 ```python
-# swarm/in_process.py:52-102
 class TeammateAbortController:
-    def __init__(self):
-        self.cancel_event = asyncio.Event()    # 优雅取消（完成当前工具后退出）
-        self.force_cancel = asyncio.Event()    # 强制取消（立即取消 Task）
+    cancel_event: asyncio.Event    # L64: 优雅取消
+    force_cancel: asyncio.Event    # L67: 强制取消
 
-    def request_cancel(self, reason=None, *, force=False):
+    def request_cancel(self, reason=None, *, force=False):  # L77
         if force:
-            self.force_cancel.set()
-            self.cancel_event.set()    # 两个都设
+            self.force_cancel.set()   # L90: 立即终止
+            self.cancel_event.set()   # L91: 同时设优雅信号
         else:
-            self.cancel_event.set()    # 只设优雅取消
+            self.cancel_event.set()   # L97: 只设优雅信号
 ```
 
-**为什么需要两级？** 想象 Worker 正在执行 `bash: pytest -x`（可能运行 5 分钟）：
-- **优雅取消**：等 pytest 跑完，然后退出
-- **强制取消**：立即杀掉，不管 pytest 跑到哪
+**谁调用 request_cancel？**
+- `InProcessBackend.shutdown(force=False)` → L568 `request_cancel(reason="graceful shutdown")`
+- `InProcessBackend.shutdown(force=True)` → L562 `request_cancel(reason="force shutdown", force=True)`
+- `_drain_mailbox()` 收到 shutdown 消息 → L317 `request_cancel(reason="shutdown message received")`
 
-#### 2.11 Agent 执行循环
+#### 2.12 spawn → 执行循环 完整调用链
 
-```python
-# swarm/in_process.py:196-292
-async def start_in_process_teammate(*, config, agent_id, abort_controller, query_context=None):
-    # 1. 绑定上下文（ContextVar）
-    ctx = TeammateContext(agent_id=agent_id, agent_name=config.name, ...)
-    set_teammate_context(ctx)
+**这是多 Agent 最核心的链路**，从 spawn 到 Worker 运行 `run_query()` 的完整路径：
 
-    # 2. 创建邮箱
-    mailbox = TeammateMailbox(team_name=config.team, agent_id=agent_id)
+```
+① AgentTool.execute()                         [agent_tool.py:81]
+   └→ InProcessBackend.spawn(config)           [in_process.py:436-492]
+      ├─ L443: agent_id = f"{config.name}@{config.team}"
+      ├─ L460: abort_controller = TeammateAbortController()
+      ├─ L464-471: task = asyncio.create_task(    ← Python copy-on-create 隔离
+      │      start_in_process_teammate(
+      │          config=config,
+      │          agent_id=agent_id,
+      │          abort_controller=abort_controller,
+      │      )
+      │  )
+      ├─ L473-478: 注册到 _active[agent_id] = _TeammateEntry(task, abort, task_id)
+      └─ L488-492: return SpawnResult(task_id, agent_id, backend_type)
 
-    try:
-        ctx.status = "running"
-        if query_context:
-            await _run_query_loop(query_context, config, ctx, mailbox)  # 真正的 Agent 循环
-        else:
-            # Stub 模式（无 QueryContext 时的占位运行）
-            ...
-    finally:
-        ctx.status = "stopped"
-        # 通知 Leader: "我完成了"
-        idle_msg = create_idle_notification(sender=agent_id, recipient="leader", ...)
-        await leader_mailbox.write(idle_msg)
+② start_in_process_teammate()                  [in_process.py:196-292]
+   ├─ L232-242: 创建 TeammateContext（agent_id, name, team, abort_controller...）
+   ├─ L243: set_teammate_context(ctx)           ← 绑定到当前 asyncio Task 的 ContextVar
+   ├─ L245: mailbox = TeammateMailbox(team, agent_id)  [mailbox.py:101-108]
+   ├─ L250: ctx.status = "running"
+   ├─ L252-253: if query_context:
+   │      await _run_query_loop(query_context, config, ctx, mailbox)
+   │  else:
+   │      L254-268: Stub 模式（无 QueryContext 时占位运行）
+   └─ finally (L275-292):
+       ├─ L276: ctx.status = "stopped"
+       ├─ L279-285: 写 idle_notification 到 Leader 邮箱
+       │      create_idle_notification()         [mailbox.py:269-275]
+       │      TeammateMailbox("leader").write()   [mailbox.py:122-153]
+       └─ L287-292: 日志记录
+
+③ _run_query_loop()                            [in_process.py:335-395]
+   ├─ L350: from engine.query import run_query   ← 延迟导入（避免循环依赖）
+   ├─ L353-355: messages = [ConversationMessage.from_user_text(config.prompt)]
+   │            ↑ 全新的消息列表！只有 Leader 传来的 prompt 一条消息
+   ├─ L357: async for event, usage in run_query(query_context, messages):
+   │         ↑ 复用与主 Agent 完全相同的 run_query()！ [engine/query.py:119-233]
+   │
+   │  每个事件循环中：
+   ├─ L359-362: 累计 token 用量 → ctx.total_tokens
+   ├─ L370-375: 检查 abort_controller.is_cancelled → return 退出
+   ├─ L378-380: _drain_mailbox(mailbox, ctx)     [in_process.py:295-332]
+   │      ├─ L305: mailbox.read_all(unread_only=True)   [mailbox.py:155-183]
+   │      ├─ L315-318: shutdown 消息 → request_cancel + return True
+   │      └─ L320-330: user_message → ctx.message_queue.put(msg)
+   └─ L383-393: 从 message_queue 取消息 → 注入为新 user turn
+          messages.append(ConversationMessage(role="user", content=queued.text))
 ```
 
-#### 2.12 邮箱轮询与消息注入
+#### 2.13 send_message → Worker 收到消息的完整链路
 
-```python
-# swarm/in_process.py:335-395
-async def _run_query_loop(query_context, config, ctx, mailbox):
-    messages = [ConversationMessage.from_user_text(config.prompt)]   # 初始提示
+```
+① SendMessageTool.execute()                    [send_message_tool.py:34-35]
+   └→ _send_swarm_message(agent_id, message)   [send_message_tool.py:42-62]
+      └→ InProcessBackend.send_message()        [in_process.py:494-527]
+         ├─ L510: agent_name, team_name = agent_id.split("@")
+         ├─ L514-524: 构建 MailboxMessage(type="user_message", payload={content: text})
+         ├─ L525: mailbox = TeammateMailbox(team_name, agent_name)
+         └─ L526: await mailbox.write(msg)      [mailbox.py:122-153]
+                  └─ L140-149: _write_atomic()
+                     ├─ fcntl.flock(LOCK_EX)    # 加排他锁
+                     ├─ tmp_path.write_text()    # 写临时文件
+                     ├─ os.rename(tmp → final)   # 原子重命名
+                     └─ fcntl.flock(LOCK_UN)     # 释放锁
 
-    async for event, usage in run_query(query_context, messages):    # 复用核心 Agent 循环！
-        # 追踪 token 用量
-        if usage: ctx.total_tokens += usage.input_tokens + usage.output_tokens
+② Worker 在 _run_query_loop 每轮末尾轮询邮箱    [in_process.py:378]
+   └→ _drain_mailbox(mailbox, ctx)              [in_process.py:295-332]
+      ├─ L305: pending = mailbox.read_all()     [mailbox.py:155-183]
+      │         └─ 扫描 inbox/*.json，跳过 .tmp 和 .lock
+      ├─ L320-330: user_message 类型
+      │    └─ ctx.message_queue.put(TeammateMessage(text=content))
+      └─ 返回 _run_query_loop
 
-        # 检查取消信号
-        if ctx.abort_controller.is_cancelled:
-            return
-
-        # 轮询邮箱——处理 shutdown 请求和新消息
-        should_stop = await _drain_mailbox(mailbox, ctx)
-        if should_stop:
-            return
-
-        # 注入排队的消息为新的 user turn
-        while not ctx.message_queue.empty():
-            queued = ctx.message_queue.get_nowait()
-            messages.append(ConversationMessage(role="user", content=queued.text))
-
-    ctx.status = "idle"
+③ _run_query_loop 下一轮开始前 drain queue      [in_process.py:383-393]
+   └─ messages.append(ConversationMessage(role="user", content=queued.text))
+      ↑ 消息被注入为 Worker 对话历史中的新 user 消息
+      ↑ Worker 的 LLM 在下一轮 run_query 中会看到这条消息
 ```
 
-**关键洞察**：每个 Agent 内部运行的是**完全相同的 `run_query()` 循环**——和主 Agent 用的是同一个引擎核心！区别只在于：
-- 初始消息来自 Coordinator 的 prompt（而非用户输入）
-- 每轮之间会检查邮箱（而非等用户输入）
-- 有双信号取消机制（而非 MaxTurnsExceeded）
+#### 2.14 SubprocessBackend 的对比链路
+
+> 📄 `subprocess_backend.py` (151 行)
+
+```
+spawn（L47-94）:
+  ├─ L55-58: build_inherited_cli_flags()         [spawn_utils.py:93-165]
+  │           → "--headless" + "--model xxx" + "--permission-mode xxx"
+  ├─ L59: build_inherited_env_vars()              [spawn_utils.py:168-186]
+  │           → ANTHROPIC_API_KEY + HTTPS_PROXY + ... (共 20+ 个变量)
+  ├─ L64-66: command = "python -m openharness --headless --model ..."
+  │           ↑ 就是启动了一个新的 oh 实例！
+  └─ L70-77: manager.create_agent_task(prompt, command, cwd)
+             ↑ prompt 通过 stdin 传入子进程
+
+send_message（L96-118）:
+  ├─ L106-114: payload = {"text": ..., "from": ..., "timestamp": ...}
+  └─ L117: manager.write_to_task(task_id, json.dumps(payload))
+           ↑ 通过 stdin 管道发送 JSON
+```
+
+**关键区别**：InProcess 用 asyncio Task + ContextVar + 文件邮箱；Subprocess 用 fork 新进程 + stdin/stdout。Worker 内部跑的都是 `run_query()` 循环，但 Subprocess 是完整的 `oh` 实例（经过 CLI → build_runtime → 全套初始化）。
 
 ---
 
